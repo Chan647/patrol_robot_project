@@ -53,11 +53,13 @@ class IntegratedNavigation(Node):
         self.load_waypoints()
 
         self.stop_requested = False
-        self.returning_home = False
+        self.current_goal_is_home = False
         self.home_pose = None
-        self.stop_requested = False
+        self.patrol_active = True
 
-        self.wp_timer = self.create_timer(1.0, self.send_next_waypoint)
+        self.mode = "MANUAL"
+        self.localization_ok = False
+        
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_path = self.create_publisher(Path, '/planned_path', 10)
 
@@ -66,8 +68,13 @@ class IntegratedNavigation(Node):
         self.sub_goal = self.create_subscription(PoseStamped, '/goal_pose', self.goal_callback, 10)
         self.sub_scan = self.create_subscription(LaserScan, '/scan', self.scan_callback, qos_profile_sensor_data)
         self.sub_stop = self.create_subscription(Bool, '/patrol_stop', self.stop_callback, 10)
+        self.sub_start = self.create_subscription(Bool, '/patrol_start', self.start_callback, 10)
+        self.sub_auto = self.create_subscription(Bool, '/auto_mode', self.auto_callback, 10)
+        self.sub_manual = self.create_subscription(Bool, '/manual_mode', self.manual_callback, 10)
+        self.sub_signal = self.create_subscription(PoseWithCovarianceStamped, '/initialpose', self.signal_callback, 10)
 
         self.timer = self.create_timer(0.3, self.control_loop)
+        self.wp_timer = self.create_timer(1.0, self.send_next_waypoint)
         self.get_logger().info("Let's Run!")
 
     def map_callback(self, msg):
@@ -105,6 +112,50 @@ class IntegratedNavigation(Node):
         front_ranges = msg.ranges[0:15] + msg.ranges[-15:]
 
         self.front_dist = self.get_min_dist(front_ranges)
+
+    def stop_callback(self, msg):
+        if msg.data:
+            self.stop_requested = True
+            self.patrol_active = False
+            self.current_goal_is_home = False
+            self.get_logger().info("Stop command!")
+
+    def start_callback(self, msg):
+        if not msg.data:
+            return
+
+        if self.mode != "AUTO":
+            return
+
+        if not self.localization_ok:
+            return
+
+        self.patrol_active = True
+        self.stop_requested = False
+        self.global_path = []
+        self.path_index = 0
+        self.wp_index = 0
+        self.get_logger().info("Resuming patrol.")  
+
+    def auto_callback(self,msg):
+        if msg.data:
+            if not self.localization_ok:
+                return
+            self.mode = "AUTO"
+            self.get_logger().info("AUTO mode")
+
+    def manual_callback(self,msg):
+        if msg.data:
+            if self.global_path:
+                self.get_logger().info("Can't Switch. Robot is Moving")
+                return
+            self.mode = "MANUAL"
+            self.localization_ok = False
+            self.get_logger().info("MANUAL mode")
+
+    def signal_callback(self,msg):
+        if not self.localization_ok:
+            self.localization_ok = True
 
     def run_astar(self, start, end):
         if not (0 <= start[0] < self.map_height and 0 <= start[1] < self.map_width): return None
@@ -157,23 +208,39 @@ class IntegratedNavigation(Node):
         return None
 
     def control_loop(self):
-        if not self.global_path: return
+        if self.mode == "MANUAL":
+            return
+
+        if not self.global_path:
+            return
 
         final_goal = self.global_path[-1]
-
         dist_to_final = sqrt((final_goal[0]-self.current_pose[0])**2 + (final_goal[1]-self.current_pose[1])**2)
 
         if dist_to_final < self.stop_tolerance:
             self.global_path = []
-            if self.returning_home and self.stop_requested:
-                self.stop_robot()
-                self.stop_requested = False
-                self.returning_home = False
+
+            if self.stop_requested and not self.current_goal_is_home:
+                msg = PoseStamped()
+                msg.pose.position.x = self.home_pose['x']
+                msg.pose.position.y = self.home_pose['y']
+                msg.pose.orientation.z = sin(self.home_pose['yaw'] / 2.0)
+                msg.pose.orientation.w = cos(self.home_pose['yaw'] / 2.0)
+
+                self.current_goal_is_home = True
+                self.goal_callback(msg)
                 return
-            self.stop_robot()
+
+            if self.current_goal_is_home:
+               self.stop_robot()
+               self.stop_requested = False
+               self.current_goal_is_home = False
+               self.get_logger().info("Returned to home position. Stop the robot")
+               return
+
             return
 
-        target_x, target_y = self.global_path[-1]
+        target_x, target_y = final_goal
 
         for i in range(self.path_index, len(self.global_path)):
             px, py = self.global_path[i]
@@ -236,17 +303,7 @@ class IntegratedNavigation(Node):
         if self.global_path:
             return
 
-        if self.stop_requested and self.wp_index == 0:
-            if self.home_pose is None:
-                return
-
-            msg = PoseStamped()
-            msg.pose.position.x = self.home_pose['x']
-            msg.pose.position.y = self.home_pose['y']
-            msg.pose.orientation.z = sin(self.home_pose['yaw'] / 2.0)
-            msg.pose.orientation.w = cos(self.home_pose['yaw'] / 2.0)
-            self.goal_callback(msg)
-            self.stop_requested = False
+        if not self.patrol_active:
             return
 
         wp = self.waypoints[self.wp_index]
@@ -256,6 +313,7 @@ class IntegratedNavigation(Node):
         msg.pose.orientation.z = sin(wp['yaw'] / 2.0)
         msg.pose.orientation.w = cos(wp['yaw'] / 2.0)
 
+        self.current_goal_is_home = False
         self.goal_callback(msg)
 
         self.wp_index += 1
@@ -288,11 +346,6 @@ class IntegratedNavigation(Node):
 
     def stop_robot(self):
         self.pub_cmd.publish(Twist())
-
-    def stop_callback(self, msg):
-        if msg.data:
-            self.stop_requested = True
-            self.get_logger().info("Stop command!")
 
 def main(args=None):
     rclpy.init(args=args)

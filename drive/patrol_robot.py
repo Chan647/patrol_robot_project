@@ -8,6 +8,7 @@ from sensor_msgs.msg import CompressedImage
 from ultralytics import YOLO
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Bool
+from patrol_msgs.msg import Event
 import cv2
 import heapq
 import numpy as np
@@ -56,18 +57,21 @@ class IntegratedNavigation(Node):
         self.current_goal_is_home = False
         self.home_pose = None
         self.patrol_active = True
+        self.emerge_stop_com = False
 
         self.mode = "MANUAL"
         self.localization_ok = False
         
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_path = self.create_publisher(Path, '/planned_path', 10)
+        self.pub_event = self.create_publisher(Event, '/patrol_event', 10)
 
         self.sub_map = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
         self.sub_pose = self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self.pose_callback, 10)
         self.sub_goal = self.create_subscription(PoseStamped, '/goal_pose', self.goal_callback, 10)
         self.sub_scan = self.create_subscription(LaserScan, '/scan', self.scan_callback, qos_profile_sensor_data)
         self.sub_stop = self.create_subscription(Bool, '/patrol_stop', self.stop_callback, 10)
+        self.sub_emrgestop = self.create_subscription(Bool, '/emergency_stop', self.emerge_callback, 10)
         self.sub_start = self.create_subscription(Bool, '/patrol_start', self.start_callback, 10)
         self.sub_auto = self.create_subscription(Bool, '/auto_mode', self.auto_callback, 10)
         self.sub_manual = self.create_subscription(Bool, '/manual_mode', self.manual_callback, 10)
@@ -120,6 +124,19 @@ class IntegratedNavigation(Node):
             self.current_goal_is_home = False
             self.get_logger().info("Stop command!")
 
+    def emerge_callback(self, msg):
+        if not msg.data:
+            return
+
+        self.emerge_stop_com = not self.emerge_stop_com
+
+        if self.emerge_stop_com:
+            self.stop_robot()
+            self.event("EMERGENCY STOP", "ROBOT STOP")
+            self.get_logger().warn("Emergency Stop!!")
+        else:
+            self.get_logger().info("Emergency Stop Released")
+
     def start_callback(self, msg):
         if not msg.data:
             return
@@ -128,6 +145,9 @@ class IntegratedNavigation(Node):
             return
 
         if not self.localization_ok:
+            return
+
+        if self.emerge_stop_com:
             return
 
         self.patrol_active = True
@@ -142,6 +162,7 @@ class IntegratedNavigation(Node):
             if not self.localization_ok:
                 return
             self.mode = "AUTO"
+            self.patrol_active = True 
             self.get_logger().info("AUTO mode")
 
     def manual_callback(self,msg):
@@ -156,6 +177,19 @@ class IntegratedNavigation(Node):
     def signal_callback(self,msg):
         if not self.localization_ok:
             self.localization_ok = True
+
+    def event(self, situation, status, image_path=""):
+        if self.current_pose is None:
+            return
+
+        msg = Event()
+        msg.situation = situation
+        msg.status = status
+        msg.x = float(self.current_pose[0])
+        msg.y = float(self.current_pose[1])
+        msg.image_path = image_path
+
+        self.pub_event.publish(msg)
 
     def run_astar(self, start, end):
         if not (0 <= start[0] < self.map_height and 0 <= start[1] < self.map_width): return None
@@ -208,6 +242,10 @@ class IntegratedNavigation(Node):
         return None
 
     def control_loop(self):
+        if self.emerge_stop_com:
+            self.stop_robot()
+            return
+
         if self.mode == "MANUAL":
             return
 
@@ -216,6 +254,9 @@ class IntegratedNavigation(Node):
 
         final_goal = self.global_path[-1]
         dist_to_final = sqrt((final_goal[0]-self.current_pose[0])**2 + (final_goal[1]-self.current_pose[1])**2)
+
+        if self.emerge_stop_com:
+            self.stop_robot()
 
         if dist_to_final < self.stop_tolerance:
             self.global_path = []

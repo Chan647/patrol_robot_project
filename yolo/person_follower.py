@@ -53,7 +53,7 @@ class PersonFollower(Node):
         h, w = frame.shape[:2]
         frame_center_x = w / 2
 
-        results = self.model(frame, conf=0.6, imgsz=320)
+        results = self.model(frame, conf=0.6, imgsz=320, verbose=False)
         twist = Twist()
         person_detected = False
         annotated_frame = frame.copy()

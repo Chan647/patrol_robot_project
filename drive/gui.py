@@ -19,12 +19,12 @@ from patrol_msgs.msg import Event
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel,
-    QPushButton, QVBoxLayout, QHBoxLayout
+    QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy, QHeaderView
 )
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QImage, QPixmap, QColor
 from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtWidgets import QFrame
-from PyQt5.QtWidgets import QSizePolicy
+
+
 
 s3 = boto3.client(
     's3',
@@ -141,7 +141,7 @@ class GuiNode(Node):
         self.pub_manual = self.create_publisher(Bool, '/manual_mode', 10)
         self.pub_emergstop = self.create_publisher(Bool,'/emergency_stop', 10)
 
-        self.sub_image = self.create_subscription(CompressedImage, '/image_raw/compressed', self.image_callback, 10)
+        self.sub_image = self.create_subscription(CompressedImage, '/image_debug', self.image_callback, 10)
         self.sub_map = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
         self.sub_path = self.create_subscription(Path, '/planned_path', self.path_callback, 10)
         self.sub_pose = self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self.pose_callback, 10)
@@ -205,9 +205,10 @@ class GuiNode(Node):
         self.gui.robot_pose = (p.x, p.y)
 
     def event_callback(self,msg):
-        if self.uploaded_once:
-            return
-        self.uploaded_once = True
+        if msg.situation != "HUMAN DETECT":
+            if self.uploaded_once:
+                return
+            self.uploaded_once = True
 
         now = datetime.datetime.now()
         time_str = now.strftime("%H:%M:%S")
@@ -460,10 +461,16 @@ class LogHistoryWindow(QWidget):
 
         self.table = QTableWidget()
         self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels([
-            "상황", "상태", "X", "Y", "이미지", "시간"
-        ])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setHorizontalHeaderLabels(["상황", "상태", "X", "Y", "이미지", "시간" ])
+
+        header = self.table.horizontalHeader()
+        self.table.setColumnWidth(0, 180) 
+        self.table.setColumnWidth(1, 180)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents) 
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents) 
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
 
@@ -482,6 +489,21 @@ class LogHistoryWindow(QWidget):
             self.table.setItem(row, 2, QTableWidgetItem(f"{log['x']:.2f}"))
             self.table.setItem(row, 3, QTableWidgetItem(f"{log['y']:.2f}"))
             self.table.setItem(row, 5, QTableWidgetItem(str(log['created_at'])))
+
+            HUMAN_COLOR     = QColor(255, 200, 200)
+            EMERGENCY_COLOR = QColor(255, 245, 200)
+
+            if "HUMAN" in log['situation']:
+                bg_color = HUMAN_COLOR
+            elif "EMERGENCY" in log['situation']:
+                bg_color = EMERGENCY_COLOR
+            else:
+                bg_color = NORMAL_COLOR
+
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item:
+                    item.setBackground(bg_color)
 
             btn = QPushButton("보기")
             btn.clicked.connect(

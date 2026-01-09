@@ -1,19 +1,21 @@
-import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist, PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Path
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, CompressedImage
+from std_msgs.msg import String, Bool, Int32
+from patrol_msgs.msg import Event
 from math import pow, atan2, sqrt, sin, pi, cos
 from sensor_msgs.msg import CompressedImage
 from ultralytics import YOLO
 from rclpy.qos import qos_profile_sensor_data
-from std_msgs.msg import Bool
-from patrol_msgs.msg import Event
+
+import rclpy
 import cv2
 import heapq
 import numpy as np
 import os
 import yaml
+
 
 class NodeAStar:
     def __init__(self, parent=None, position=None):
@@ -61,7 +63,13 @@ class IntegratedNavigation(Node):
 
         self.mode = "MANUAL"
         self.localization_ok = False
-        
+        self.traffic_state = "NO"
+        self.human_state = "NORMAL"
+        self.signal_stop =  False
+
+        self.person = None
+        self.image_center = 208 
+
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_path = self.create_publisher(Path, '/planned_path', 10)
         self.pub_event = self.create_publisher(Event, '/patrol_event', 10)
@@ -76,8 +84,12 @@ class IntegratedNavigation(Node):
         self.sub_auto = self.create_subscription(Bool, '/auto_mode', self.auto_callback, 10)
         self.sub_manual = self.create_subscription(Bool, '/manual_mode', self.manual_callback, 10)
         self.sub_signal = self.create_subscription(PoseWithCovarianceStamped, '/initialpose', self.signal_callback, 10)
+        self.sub_traffic_msg = self.create_subscription(String, '/traffic_state', self.traffic_callback, 10)
+        self.sub_human_msg = self.create_subscription(String, '/human_state', self.human_callback, 10)
+        self.sub_person = self.create_subscription(Int32, '/person', self.person_callback, 10)
 
-        self.timer = self.create_timer(0.3, self.control_loop)
+
+        self.timer = self.create_timer(0.3, self.control)
         self.wp_timer = self.create_timer(1.0, self.send_next_waypoint)
         self.get_logger().info("Let's Run!")
 
@@ -159,8 +171,6 @@ class IntegratedNavigation(Node):
 
     def auto_callback(self,msg):
         if msg.data:
-            if not self.localization_ok:
-                return
             self.mode = "AUTO"
             self.patrol_active = True 
             self.get_logger().info("AUTO mode")
@@ -177,6 +187,29 @@ class IntegratedNavigation(Node):
     def signal_callback(self,msg):
         if not self.localization_ok:
             self.localization_ok = True
+
+    def traffic_callback(self,msg):
+        self.traffic_state = msg.data
+
+        if self.traffic_state == "RED":
+            self.signal_stop = True
+        elif self.traffic_state == "GREEN":
+            self.signal_stop = False
+
+    def human_callback(self,msg):
+        prev = self.human_state
+        self.human_state = msg.data
+
+        if prev == "NORMAL" and self.human_state == "PERSON":
+            self.event("HUMAN DETECT", "FOLLOW HUMAN")
+
+        if prev == "PERSON" and self.human_state == "NORMAL":
+            self.person = None
+            self.global_path = []
+            self.path_index = 0
+
+    def person_callback(self,msg):
+        self.person = int(msg.data)
 
     def event(self, situation, status, image_path=""):
         if self.current_pose is None:
@@ -241,22 +274,36 @@ class IntegratedNavigation(Node):
                 heapq.heappush(open_list, new_node)
         return None
 
-    def control_loop(self):
+    def control(self):
         if self.emerge_stop_com:
             self.stop_robot()
+            return
+
+        if not self.localization_ok:
             return
 
         if self.mode == "MANUAL":
             return
 
+        if self.human_state == "PERSON":
+            if self.front_dist < 0.4:
+                self.stop_robot()
+                return
+            self.follow_human()
+            return
+
+        if self.signal_stop:
+            self.stop_robot()
+            return
+
         if not self.global_path:
             return
 
+        self.follow_path()
+
+    def follow_path(self):
         final_goal = self.global_path[-1]
         dist_to_final = sqrt((final_goal[0]-self.current_pose[0])**2 + (final_goal[1]-self.current_pose[1])**2)
-
-        if self.emerge_stop_com:
-            self.stop_robot()
 
         if dist_to_final < self.stop_tolerance:
             self.global_path = []
@@ -300,8 +347,6 @@ class IntegratedNavigation(Node):
         elif alpha < -pi: alpha += 2*pi
 
         cmd = Twist()
-
-        
         if abs(alpha) > 1.0:
             cmd.linear.x = 0.0
             cmd.angular.z = 0.4 if alpha > 0 else -0.4
@@ -314,11 +359,28 @@ class IntegratedNavigation(Node):
             angular_velocity = self.linear_vel * (2.0 * sin(alpha)) / self.lookahead_dist
             cmd.linear.x = self.linear_vel
             cmd.angular.z = angular_velocity
-        
+
         if cmd.angular.z > 1.0: cmd.angular.z = 1.0
         if cmd.angular.z < -1.0: cmd.angular.z = -1.0
-        
+
         self.pub_cmd.publish(cmd)
+
+    def follow_human(self):
+        if self.person is None:
+            self.stop_robot()
+            return
+
+        error = float(self.person - self.image_center)
+
+        cmd = Twist()
+        cmd.linear.x = 0.12
+        cmd.angular.z = -0.003 * error
+
+        if cmd.angular.z > 1.0: cmd.angular.z = 1.0
+        if cmd.angular.z < -1.0: cmd.angular.z = -1.0
+
+        self.pub_cmd.publish(cmd)
+
 
     def load_waypoints(self):
         yaml_path = '/home/cho/lch_ws/src/turtle_pkg/config/patrol_waypoints.yaml'

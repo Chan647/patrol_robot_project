@@ -10,7 +10,6 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 
-
 class VisionDebugNode(Node):
     def __init__(self):
         super().__init__('vision_debug_node')

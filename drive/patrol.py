@@ -1,6 +1,13 @@
 # 경로생성 = D*lite / 주행 = pure pursuit 
 
+"""
+ros2 launch turtlebot3_bringup robot.launch.py
 
+ros2 launch nav2_bringup localization_launch.py map:=/내/맵파일/절대경로/map.yaml
+
+ros2 run rviz2 rviz2 -d /home/jgs/patrol_pkg/patrol_pkg/patrol.rviz
+
+"""
 
 import rclpy
 from rclpy.node import Node
@@ -167,7 +174,7 @@ class PatrolStaticNode(Node):
         self.pub_path = self.create_publisher(Path, '/plan_path', 10) # 경로 시각화
         
         # timer 
-        self.create_timer(0.3, self.control_loop)           # 0.1 
+        self.create_timer(0.1, self.control_loop)           # 0.1 
         self.get_logger().info("Patrol Node Ready. Waiting for Map...")
 
     # World 좌표(m) -> Grid 좌표(index) 변환 => 지도상의 로봇 위치와 데이터 그리기 위함
@@ -285,7 +292,7 @@ class PatrolStaticNode(Node):
 
         # Lookahead (전방 주시 지점 선정)
         # 로봇으로부터 0.4m 떨어진 경로 점을 목표로 설정
-        LOOKAHEAD_DIST = 0.4
+        LOOKAHEAD_DIST = 0.6
         target_x, target_y = None, None
         for gx, gy in self.full_path:
             wx, wy = self.grid_to_world(gx, gy)
@@ -306,7 +313,7 @@ class PatrolStaticNode(Node):
         # 도착 판정 (남은 경로 점이 5개 미만이고 거리가 0.2m 이내일 때)     
         # -> 더 정밀하게 = 점 개수 줄이기 + 남은거리 0.1m
         # 지나온 길의 점은 삭제됨 -> 남은 경로 점 5개 미만 = 다 온거나 마찬가지 
-        if len(self.full_path) < 5 and dist_to_goal < 0.2:
+        if len(self.full_path) < 5 and dist_to_goal < 0.1:
             self.get_logger().info("Goal Reached!")
             self.full_path = []
             self.is_moving = False
@@ -315,10 +322,10 @@ class PatrolStaticNode(Node):
 
         # P-Controller (비례 제어)
         # yaw_err = 각도의 오차범위 
-        cmd.angular.z = 1.2 * yaw_err # 회전 속도
+        cmd.angular.z = 0.8 * yaw_err # 회전 속도
         
         # 각도 오차가 작으면 빠르게, 크면 느리게 또는 제자리 회전
-        if abs(yaw_err) < 0.5: cmd.linear.x = 0.22
+        if abs(yaw_err) < 0.5: cmd.linear.x = 0.15
         elif abs(yaw_err) < 1.0: cmd.linear.x = 0.1
         else: cmd.linear.x = 0.0
 

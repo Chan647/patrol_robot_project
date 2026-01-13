@@ -196,8 +196,7 @@ class PatrolStaticNode(Node):
         self.origin_y = msg.info.origin.position.y
         
         # 안전거리 offset inflation 설정
-        # 0.4m(40cm) 반경을 안전거리로 설정 
-        inflation_cells = int(0.4 / self.resolution)
+        inflation_cells = int(0.2 / self.resolution)
 
         # 플래너에 맵 데이터 전달 및 장애물 inflation 설정 
         self.planner.init_map(msg.info.width, msg.info.height, msg.data, self.resolution, inflation_cells)
@@ -250,7 +249,8 @@ class PatrolStaticNode(Node):
         for i, r in enumerate(msg.ranges):
             # 성능 최적화를 위해 데이터 다운샘플링 (4개 중 1개만 사용)
             if i % 4 != 0: continue
-            # 유효 거리(0.1m ~ 2.0m) 필터링
+
+            # 장애물 유효 거리(0.1m ~ 2.0m)
             if r < 0.1 or r > 2.0: continue
 
             # 장애물의 절대 좌표 계산

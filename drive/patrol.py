@@ -146,7 +146,7 @@ class DStarLite:
         return path
 
 # =========================================
-# Node (Pure Pursuit) 
+# 주행(Pure Pursuit) 
 # =========================================
 class PatrolStaticNode(Node):
     def __init__(self):
@@ -189,7 +189,7 @@ class PatrolStaticNode(Node):
     # -> 지도의 원점과 로봇의 중심점 까지의 거리, 회전각도를 계산하여 반환 
     def get_robot_pose(self):
         try:
-            t = self.tf_buffer.lookup_transform('map', 'base_footprint', rclpy.time.Time(), timeout=Duration(seconds=0.05))
+            t = self.tf_buffer.lookup_transform('map', 'base_footprint', rclpy.time.Time(), timeout=Duration(seconds=0.2))
             q = t.transform.rotation
             # 쿼터니언(q.w, q.z, q.x, q.y)을 라디안 각(Yaw)으로 변환
             yaw = atan2(2*(q.w*q.z + q.x*q.y), 1 - 2*(q.y*q.y + q.z*q.z))
@@ -280,6 +280,8 @@ class PatrolStaticNode(Node):
         if pose is None: return
         rx, ry, ryaw = pose
 
+
+
         # Pruning (지나온 길의 점들 삭제)
         # 로봇과 가장 가까운 경로 점을 찾아 그 이전 경로들을 리스트에서 제거
         min_dist = float('inf'); closest_idx = -1
@@ -289,6 +291,8 @@ class PatrolStaticNode(Node):
             if dist < min_dist: min_dist = dist; closest_idx = i
         
         if closest_idx > 0: self.full_path = self.full_path[closest_idx:]
+
+
 
         # Lookahead (전방 주시 지점 선정)
         # 로봇으로부터 0.4m 떨어진 경로 점을 목표로 설정
@@ -322,7 +326,7 @@ class PatrolStaticNode(Node):
 
         # P-Controller (비례 제어)
         # yaw_err = 각도의 오차범위 
-        cmd.angular.z = 0.8 * yaw_err # 회전 속도
+        cmd.angular.z = 0.5 * yaw_err # 회전 속도
         
         # 각도 오차가 작으면 빠르게, 크면 느리게 또는 제자리 회전
         if abs(yaw_err) < 0.5: cmd.linear.x = 0.15

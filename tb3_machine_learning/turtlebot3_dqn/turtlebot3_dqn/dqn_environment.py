@@ -98,14 +98,14 @@ class RLEnvironment(Node):
         response.state = state
         return response
 
-    #def call_task_succeed(self):
-        #while not self.task_succeed_client.wait_for_service(timeout_sec=1.0):
-            #pass
-        #future = self.task_succeed_client.call_async(Goal.Request())
-        #rclpy.spin_until_future_complete(self, future)
-        #res = future.result()
-        #self.goal_pose_x = res.pose_x
-        #self.goal_pose_y = res.pose_y
+    def call_task_succeed(self):
+        while not self.task_succeed_client.wait_for_service(timeout_sec=1.0):
+            pass
+        future = self.task_succeed_client.call_async(Goal.Request())
+        rclpy.spin_until_future_complete(self, future)
+        res = future.result()
+        self.goal_pose_x = res.pose_x
+        self.goal_pose_y = res.pose_y
 
     def call_task_failed(self):
         while not self.task_failed_client.wait_for_service(timeout_sec=1.0):
@@ -119,10 +119,13 @@ class RLEnvironment(Node):
     def scan_sub_callback(self, scan):
         self.scan_ranges = []
         self.front_ranges = []
-        self.front_angles = []
+        self.left_ranges = []
+        self.front_center_ranges = []
+        self.right_ranges = []
 
         for i, distance in enumerate(scan.ranges):
             angle = scan.angle_min + i * scan.angle_increment
+
             if distance == float('Inf'):
                 distance = 3.5
             elif numpy.isnan(distance):
@@ -130,9 +133,15 @@ class RLEnvironment(Node):
 
             self.scan_ranges.append(distance)
 
-            if (0 <= angle <= math.pi / 2) or (3 * math.pi / 2 <= angle <= 2 * math.pi):
+            if -math.pi / 2 <= angle <= math.pi / 2:
                 self.front_ranges.append(distance)
-                self.front_angles.append(angle)
+
+                if math.pi / 6 < angle <= math.pi / 2:
+                    self.left_ranges.append(distance)
+                elif -math.pi / 6 <= angle <= math.pi / 6:
+                    self.front_center_ranges.append(distance)
+                elif -math.pi / 2 <= angle < -math.pi / 6:
+                    self.right_ranges.append(distance)
 
         if self.front_ranges:
             self.min_obstacle_distance = min(self.front_ranges)
@@ -161,22 +170,32 @@ class RLEnvironment(Node):
             self.goal_angle += 2 * math.pi
 
     def calculate_state(self):
-        state = [float(self.goal_distance), float(self.goal_angle)]
-        state.extend([float(x) for x in self.front_ranges])
+        left = min(self.left_ranges) if self.left_ranges else 3.5
+        center = min(self.front_center_ranges) if self.front_center_ranges else 3.5
+        right = min(self.right_ranges) if self.right_ranges else 3.5
+
+        state = [
+            float(self.goal_distance),
+            float(self.goal_angle),
+            left,
+            center,
+            right
+        ]
 
         self.local_step += 1
         if self.local_step < 10:
             return state
 
-        if self.goal_distance < 0.20:
+        if self.goal_distance < 0.25:
             self.succeed = True
             self.done = True
             self.local_step = 0
+            self.call_task_succeed()
             if self.succeed:
                 self.cmd_vel_pub.publish(Twist())
             return state
 
-        if self.min_obstacle_distance < 0.15:
+        if self.min_obstacle_distance < 0.25:
             self.fail = True
             self.done = True
             self.local_step = 0
@@ -226,6 +245,22 @@ class RLEnvironment(Node):
 
     def rl_agent_interface_callback(self, request, response):
         action = request.action
+
+        #right_front = min(self.front_ranges[len(self.front_ranges)//2:])
+        #left_front  = min(self.front_ranges[:len(self.front_ranges)//2])
+
+        #SAFE_DIST = 0.25
+
+
+        #if right_front < SAFE_DIST and action in [3, 4]:
+            #action = 1
+
+
+        #elif left_front < SAFE_DIST and action in [0, 1]:
+            #action = 3
+
+
+
 
         if ROS_DISTRO == 'humble':
             msg = Twist()

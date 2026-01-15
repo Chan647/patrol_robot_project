@@ -74,7 +74,7 @@ class DQNAgent(Node):
 
         self.stage = int(stage_num)
         self.train_mode = True
-        self.state_size = 14
+        self.state_size = 5
         self.action_size = 5
         self.max_training_episodes = int(max_training_episodes)
 
@@ -99,8 +99,8 @@ class DQNAgent(Node):
         self.update_target_after = 5000
         self.target_update_after_counter = 0
 
-        self.load_model = False
-        self.load_episode = 0
+        self.load_model = True
+        self.load_episode = 1000
         self.model_dir_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
             'saved_model'
@@ -140,6 +140,12 @@ class DQNAgent(Node):
 
         self.action_pub = self.create_publisher(Float32MultiArray, '/get_action', 10)
         self.result_pub = self.create_publisher(Float32MultiArray, 'result', 10)
+        self.avoid_mode = False
+        self.avoid_counter = 0
+        self.AVOID_DIST = 0.35
+        self.AVOID_RELEASE_DIST = 0.55
+        self.MAX_AVOID_STEP = 8
+
 
         self.process()
 
@@ -212,7 +218,7 @@ class DQNAgent(Node):
                 time.sleep(0.01)
 
             if self.train_mode:
-                if episode % 100 == 0:
+                if episode % 50 == 0:
                     self.model_path = os.path.join(
                         self.model_dir_path,
                         'stage' + str(self.stage) + '_episode' + str(episode) + '.h5')
@@ -253,20 +259,44 @@ class DQNAgent(Node):
         return state
 
     def get_action(self, state):
+        left = state[0][2]
+        center = state[0][3]
+        right = state[0][4]
+
         if self.train_mode:
+            if self.avoid_mode:
+                self.avoid_counter += 1
+
+                if center > self.AVOID_RELEASE_DIST and self.avoid_counter >= self.MAX_AVOID_STEP:
+                    self.avoid_mode = False
+                    self.avoid_counter = 0
+                else:
+                    if left < right:
+                        return 2
+                    else:
+                        return 1
+
+            if center < self.AVOID_DIST:
+                self.avoid_mode = True
+                self.avoid_counter = 0
+
+                if left < right:
+                    return 2
+                else:
+                    return 1
+
             self.step_counter += 1
             self.epsilon = self.epsilon_min + (1.0 - self.epsilon_min) * math.exp(
-                -1.0 * self.step_counter / self.epsilon_decay)
-            lucky = random.random()
-            if lucky > (1 - self.epsilon):
-                result = random.randint(0, self.action_size - 1)
+                -1.0 * self.step_counter / self.epsilon_decay
+            )
+
+            if random.random() < self.epsilon:
+                return random.randint(0, self.action_size - 1)
             else:
-                result = numpy.argmax(self.model.predict(state))
+                return numpy.argmax(self.model.predict(state))
+
         else:
-            result = numpy.argmax(self.model.predict(state))
-
-        return result
-
+            return numpy.argmax(self.model.predict(state))
     def step(self, action):
         req = Dqn.Request()
         req.action = action

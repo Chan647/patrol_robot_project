@@ -7,6 +7,7 @@ import boto3
 import uuid
 import pymysql
 import webbrowser
+import threading
 
 from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem, QPushButton
 from botocore.exceptions import ClientError
@@ -134,6 +135,7 @@ class GuiNode(Node):
         super().__init__('patrol_gui_node')
         self.gui = gui
         self.uploaded_once = False
+        self.last_event = None
 
         self.pub_start = self.create_publisher(Bool, '/patrol_start', 10)
         self.pub_stop = self.create_publisher(Bool, '/patrol_stop', 10)
@@ -181,18 +183,24 @@ class GuiNode(Node):
 
     def map_callback(self, msg):
         w, h = msg.info.width, msg.info.height
-        data = np.array(msg.data, dtype=np.int8).reshape((h,w))
+        data = np.array(msg.data, dtype=np.int8).reshape((h, w))
 
-        img = np.zeros((h, w, 3), dtype=np.uint8)
+        data = np.flipud(data)
+        data = np.rot90(data, k=1)
+
+        img = np.zeros((data.shape[0], data.shape[1], 3), dtype=np.uint8)
         img[data == 0]   = (245, 245, 245)
         img[data == 100] = (30, 30, 30)
         img[data < 0]    = (180, 180, 180)
 
-        img = cv2.flip(img, 1)
-
         self.gui.map_resolution = msg.info.resolution
-        self.gui.map_origin =(msg.info.origin.position.x, msg.info.origin.position.y)
+        self.gui.map_origin = (msg.info.origin.position.x, msg.info.origin.position.y)
+
+        self.gui.grid_w = w
+        self.gui.grid_h = h
+
         self.gui.map_image = img
+
 
     def path_callback(self, msg):
         paths = []
@@ -210,6 +218,10 @@ class GuiNode(Node):
                 return
             self.uploaded_once = True
 
+        if msg.situation == self.last_event:
+            return
+        self.last_event = msg.situation
+
         now = datetime.datetime.now()
         time_str = now.strftime("%H:%M:%S")
         self.gui.event_type.setText(f'<span style="color:green; font-weight:bold; font-size:25px">상황 : </span>' f'<span style="color:black; font-size:25px">{msg.situation}</span>')
@@ -220,7 +232,6 @@ class GuiNode(Node):
 
         if self.gui.camera_frame is not None:
             frame = self.gui.camera_frame.copy()
-            img_url = upload_image_to_minio(frame)
             img = cv2.resize(frame, (280, 180))
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
@@ -232,8 +243,11 @@ class GuiNode(Node):
                 QImage.Format_RGB888
             )
             self.gui.event_img.setPixmap(QPixmap.fromImage(qimg))
-            self.gui.last_event_image_url = img_url
+            threading.Thread(target=self.save_event_async, args=(msg, frame),daemon=True).start()
 
+    def save_event_async(self, msg, frame):
+        try:
+            img_url = upload_image_to_minio(frame)
             if img_url:
                 insert_event_log(
                     situation=msg.situation,
@@ -242,11 +256,16 @@ class GuiNode(Node):
                     y=msg.y,
                     image_url=img_url
                 )
+        except Exception as e:
+            print("[EVENT SAVE ERROR]", e)
 
 
 class Patrolgui(QWidget):
     def __init__(self):
         super().__init__()
+
+        self.grid_w = None
+        self.grid_h = None
 
         self.setWindowTitle('Patrol GUI')
         self.resize(1280, 700)
@@ -259,7 +278,7 @@ class Patrolgui(QWidget):
         self.map_label.setFixedSize(600,480)
         self.map_label.setAlignment(Qt.AlignCenter)
 
-        self.btn_drive = QPushButton("DRIVING")
+        self.btn_drive = QPushButton("DRIVE")
         self.btn_stop = QPushButton("STOP")
         self.btn_auto = QPushButton("AUTO")
         self.btn_manual = QPushButton("MANUAL")
@@ -367,7 +386,7 @@ class Patrolgui(QWidget):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
-        self.timer.start(30)
+        self.timer.start(50)
         self.log_window = None
 
     def btn_connect(self, ros):
@@ -379,20 +398,23 @@ class Patrolgui(QWidget):
         self.btn_log.clicked.connect(self.open_log_history)
 
     def world_to_map(self, x, y):
-        if self.map_origin is None or self.map_resolution is None:
+        if (self.map_origin is None or self.map_resolution is None or
+            self.map_image is None or self.grid_w is None or self.grid_h is None):
             return None
 
-        mx = (x - self.map_origin[0]) / self.map_resolution
-        my = (y - self.map_origin[1]) / self.map_resolution
-        mx = int(mx)
-        my = int(my)
+        mx = int((x - self.map_origin[0]) / self.map_resolution)
+        my = int((y - self.map_origin[1]) / self.map_resolution)
 
-        my = self.map_image.shape[0] - my - 1
-
-        if mx < 0 or my < 0 or mx >= self.map_image.shape[1] or my >= self.map_image.shape[0]:
+        if mx < 0 or my < 0 or mx >= self.grid_w or my >= self.grid_h:
             return None
 
-        return mx, my
+        px = (self.grid_h - 1 - my)
+        py = (self.grid_w - 1 - mx)
+
+        if px < 0 or py < 0 or px >= self.map_image.shape[1] or py >= self.map_image.shape[0]:
+            return None
+
+        return (px, py)
 
     def update_frame(self):
         if self.camera_frame is not None:
@@ -490,6 +512,7 @@ class LogHistoryWindow(QWidget):
             self.table.setItem(row, 3, QTableWidgetItem(f"{log['y']:.2f}"))
             self.table.setItem(row, 5, QTableWidgetItem(str(log['created_at'])))
 
+            NORMAL_COLOR = QColor(255, 255, 255)
             HUMAN_COLOR     = QColor(255, 200, 200)
             EMERGENCY_COLOR = QColor(255, 245, 200)
 

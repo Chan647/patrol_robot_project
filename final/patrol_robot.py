@@ -1,16 +1,14 @@
 from rclpy.node import Node
 from geometry_msgs.msg import Twist, PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Path
-from sensor_msgs.msg import LaserScan, CompressedImage
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String, Bool, Int32
 from patrol_msgs.msg import Event
 from math import pow, atan2, sqrt, sin, pi, cos
 from sensor_msgs.msg import CompressedImage
-from ultralytics import YOLO
 from rclpy.qos import qos_profile_sensor_data
 
 import rclpy
-import cv2
 import heapq
 import numpy as np
 import os
@@ -31,10 +29,19 @@ class IntegratedNavigation(Node):
     def __init__(self):
         super().__init__('integrated_navigation')
 
-        self.lookahead_dist = 0.5
-        self.linear_vel = 0.12
+        self.front_dist = 99.9
+        self.left_dist = 99.9
+        self.right_dist = 99.9
+
+        self.lookahead_dist = 0.8
+        self.linear_vel = 0.18
+        self.robot_radius = 0.26
+
+        self.aligning = False
+        self.target_yaw = 0.0
+        self.next_wp = None
+
         self.stop_tolerance = 0.3
-        self.robot_radius = 0.24
         
         self.map_data = None
         self.map_resolution = 0.05
@@ -44,32 +51,30 @@ class IntegratedNavigation(Node):
         self.robot_radius_cells = int(self.robot_radius / self.map_resolution)
         
         self.current_pose = None
-        self.current_yaw = 0.0
         self.global_path = []
+        self.current_yaw = 0.0
         self.path_index = 0
-        
-        self.front_dist = 99.9
 
-        self.pose_count = 0
         self.waypoints = []
+        self.wp_direction = 1
         self.wp_index = 0
+        self.return_home = False
+        self.return_wp_index = None
+        self.current_goal_index = None
         self.load_waypoints()
 
         self.stop_requested = False
-        self.current_goal_is_home = False
-        self.home_pose = None
         self.patrol_active = True
         self.emerge_stop_com = False
 
         self.mode = "MANUAL"
-        self.localization_ok = False
         self.traffic_state = "NO"
         self.human_state = "NORMAL"
+        self.localization_ok = False
         self.signal_stop =  False
 
-        self.person = None
         self.image_center = 208 
-        self.saved_path = None
+        self.person = None
         self.human_detect = False
 
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -103,13 +108,9 @@ class IntegratedNavigation(Node):
         self.map_data = np.array(msg.data).reshape((self.map_height, self.map_width))
 
     def pose_callback(self, msg):
-        self.pose_count += 1
         self.current_pose = [msg.pose.pose.position.x, msg.pose.pose.position.y]
         q = msg.pose.pose.orientation
         self.current_yaw = atan2(2.0*(q.w*q.z + q.x*q.y), 1.0-2.0*(q.y*q.y + q.z*q.z))
-
-        if not hasattr(self, 'home_pose') or self.home_pose is None:
-            self.home_pose = {'x': self.current_pose[0], 'y': self.current_pose[1], 'yaw': self.current_yaw}
 
     def goal_callback(self, msg):
         if self.map_data is None or self.current_pose is None: return
@@ -118,24 +119,27 @@ class IntegratedNavigation(Node):
         start_grid = self.world_to_grid(self.current_pose)
         goal_grid = self.world_to_grid(goal_pose)
         path_grid = self.run_astar(start_grid, goal_grid)
-        
+
         if path_grid:
             self.global_path = [self.grid_to_world(p) for p in path_grid]
             self.path_index = 0
             self.publish_path_viz()
         else:
-            self.get_logger().warn("No Path Found.")    
-
+            self.get_logger().warn("No Path Found.")
+    
     def scan_callback(self,msg):
-        front_ranges = msg.ranges[0:15] + msg.ranges[-15:]
+        n = len(msg.ranges)
+        front = msg.ranges[0:12] + msg.ranges[-12:]
+        left  = msg.ranges[15:40] 
+        right = msg.ranges[n-40:n-15]    
 
-        self.front_dist = self.get_min_dist(front_ranges)
+        self.front_dist = self.get_min_dist(front)
+        self.left_dist = self.get_min_dist(left)
+        self.right_dist = self.get_min_dist(right)
 
     def stop_callback(self, msg):
         if msg.data:
             self.stop_requested = True
-            self.patrol_active = False
-            self.current_goal_is_home = False
             self.get_logger().info("Stop command!")
 
     def emerge_callback(self, msg):
@@ -174,7 +178,11 @@ class IntegratedNavigation(Node):
     def auto_callback(self,msg):
         if msg.data:
             self.mode = "AUTO"
-            self.patrol_active = True 
+            self.patrol_active = True
+            self.localization_ok = True
+            self.human_detect = False
+            self.signal_stop = False
+            self.global_path = []
             self.get_logger().info("AUTO mode")
 
     def manual_callback(self,msg):
@@ -195,6 +203,7 @@ class IntegratedNavigation(Node):
 
         if self.traffic_state == "RED":
             self.signal_stop = True
+
         elif self.traffic_state == "GREEN":
             self.signal_stop = False
 
@@ -205,24 +214,32 @@ class IntegratedNavigation(Node):
         if prev == "NORMAL" and self.human_state == "PERSON":
             self.human_detect = True
 
-            if self.global_path:
-                self.saved_path = self.global_path[-1]
+            self.target_wp_index = self.current_goal_index
+            if self.target_wp_index is None:
+                self.target_wp_index = self.wp_index 
+
+            self.global_path = []
+            self.path_index = 0
+
             self.event("HUMAN DETECT", "FOLLOW HUMAN")
 
         if prev == "PERSON" and self.human_state == "NORMAL":
             self.person = None
+            self.human_detect = False
             self.global_path = []
             self.path_index = 0
-            self.human_detect = False
 
-            if self.saved_path is not None:
-                msg = PoseStamped()
-                msg.pose.position.x = self.saved_path[0]
-                msg.pose.position.y = self.saved_path[1]
-                msg.pose.orientation.w = 1.0
+            wp = self.waypoints[self.target_wp_index]
+            msg = PoseStamped()
+            msg.pose.position.x = wp['x']
+            msg.pose.position.y = wp['y']
+            msg.pose.orientation.w = 1.0
 
-                self.saved_path = None
-                self.goal_callback(msg)
+            self.goal_callback(msg)
+
+            if not self.global_path:
+                self.get_logger().warn("Return path failed")
+                self.wp_index = self.target_wp_index
 
     def person_callback(self,msg):
         self.person = int(msg.data)
@@ -282,15 +299,44 @@ class IntegratedNavigation(Node):
 
                 if too_close:
                     continue
-                
+                    
+                cost = sqrt(2) if move[0] != 0 and move[1] != 0 else 1.0
                 new_node = NodeAStar(current_node, (ny, nx))
-                new_node.g = current_node.g + 1
+                new_node.g = current_node.g + cost
                 new_node.h = sqrt((ny - end[0])**2 + (nx - end[1])**2)
                 new_node.f = new_node.g + new_node.h
                 heapq.heappush(open_list, new_node)
         return None
 
     def control(self):
+        if self.aligning:
+            yaw_error = self.target_yaw - self.current_yaw
+            if yaw_error > pi:
+                yaw_error -= 2 * pi
+            elif yaw_error < -pi:
+                yaw_error += 2 * pi
+
+            cmd = Twist()
+
+            if abs(yaw_error) > 0.1:
+                k = 1.2
+                cmd.angular.z = k * yaw_error
+
+                if cmd.angular.z > 0.8:
+                    cmd.angular.z = 0.8
+                elif cmd.angular.z < -0.8:
+                    cmd.angular.z = -0.8
+                    
+                cmd.linear.x = 0.0
+                self.pub_cmd.publish(cmd)
+                return
+            else:
+                self.aligning = False
+                self.wp_index = self.next_wp   
+                self.next_wp = None
+                self.stop_robot()
+                return
+
         if self.emerge_stop_com:
             self.stop_robot()
             return
@@ -305,7 +351,9 @@ class IntegratedNavigation(Node):
             if self.front_dist < 0.4:
                 self.stop_robot()
                 return
-            self.follow_human()
+            if self.signal_stop is False and self.emerge_stop_com is False:
+                self.follow_human()
+                return
             return
 
         if self.signal_stop:
@@ -318,37 +366,58 @@ class IntegratedNavigation(Node):
         self.follow_path()
 
     def follow_path(self):
+        if self.current_pose is None or not self.global_path:
+            return
+
         final_goal = self.global_path[-1]
-        dist_to_final = sqrt((final_goal[0]-self.current_pose[0])**2 + (final_goal[1]-self.current_pose[1])**2)
+
+        dist_to_final = sqrt(
+            (final_goal[0] - self.current_pose[0]) ** 2 +
+            (final_goal[1] - self.current_pose[1]) ** 2
+        )
 
         if dist_to_final < self.stop_tolerance:
             self.global_path = []
+            self.path_index = 0
 
-            if self.stop_requested and not self.current_goal_is_home:
-                msg = PoseStamped()
-                msg.pose.position.x = self.home_pose['x']
-                msg.pose.position.y = self.home_pose['y']
-                msg.pose.orientation.z = sin(self.home_pose['yaw'] / 2.0)
-                msg.pose.orientation.w = cos(self.home_pose['yaw'] / 2.0)
+            arrived_wp = self.wp_index
 
-                self.current_goal_is_home = True
-                self.goal_callback(msg)
+            if self.stop_requested and arrived_wp == 0:
+                self.patrol_active = False
+                self.stop_requested = False
+                self.stop_robot()
                 return
 
-            if self.current_goal_is_home:
-               self.stop_robot()
-               self.stop_requested = False
-               self.current_goal_is_home = False
-               self.get_logger().info("Returned to home position. Stop the robot")
-               return
+            next_wp = arrived_wp + self.wp_direction
 
+            if next_wp >= len(self.waypoints):
+                next_wp = len(self.waypoints) - 2
+                self.wp_direction = -1
+            elif next_wp < 0:
+                next_wp = 1
+                self.wp_direction = 1
+
+            self.next_wp = next_wp
+
+            curr = self.current_pose
+            wp = self.waypoints[self.next_wp]
+            dx = wp['x'] - curr[0]
+            dy = wp['y'] - curr[1]
+            self.target_yaw = atan2(dy, dx)
+
+            self.aligning = True
+            self.stop_robot()
             return
+
 
         target_x, target_y = final_goal
 
         for i in range(self.path_index, len(self.global_path)):
             px, py = self.global_path[i]
-            dist = sqrt((px - self.current_pose[0])**2 + (py - self.current_pose[1])**2)
+            dist = sqrt(
+                (px - self.current_pose[0]) ** 2 +
+                (py - self.current_pose[1]) ** 2
+            )
 
             if dist >= self.lookahead_dist:
                 target_x, target_y = px, py
@@ -357,32 +426,60 @@ class IntegratedNavigation(Node):
 
         dx = target_x - self.current_pose[0]
         dy = target_y - self.current_pose[1]
+
         alpha = atan2(dy, dx) - self.current_yaw
-        
-        if alpha > pi: alpha -= 2*pi
-        elif alpha < -pi: alpha += 2*pi
+
+        if alpha > pi:
+            alpha -= 2 * pi
+        elif alpha < -pi:
+            alpha += 2 * pi
 
         cmd = Twist()
-        if abs(alpha) > 1.0:
-            cmd.linear.x = 0.0
-            cmd.angular.z = 0.4 if alpha > 0 else -0.4
 
-        elif self.front_dist < 0.4:
-            cmd.linear.x = 0.0
-            cmd.angular.z = 0.0
+        target_linear = self.linear_vel
+        target_angular = target_linear * self.linear_vel * sin(alpha) / self.lookahead_dist
 
-        else:
-            angular_velocity = self.linear_vel * (2.0 * sin(alpha)) / self.lookahead_dist
-            cmd.linear.x = self.linear_vel
-            cmd.angular.z = angular_velocity
+        avoid_dist = 0.35
+        slow_dist = 0.55
+        avoid_dir = 0.0
+        speed_mag = 1.0
 
-        if cmd.angular.z > 1.0: cmd.angular.z = 1.0
-        if cmd.angular.z < -1.0: cmd.angular.z = -1.0
+        if self.front_dist < 0.5:
+            if self.left_dist >= self.right_dist:
+                avoid_dir = 0.5
+            else:
+                avoid_dir = -0.5
+
+            speed_mag = 0.2
+
+        elif self.left_dist < 0.3:
+            avoid_dir = -0.5
+            speed_mag = min(speed_mag, 0.2)
+
+        elif self.right_dist < 0.3:
+            avoid_dir = 0.5
+            speed_mag = min(speed_mag, 0.2)
+
+        if self.front_dist < 0.25:
+            self.stop_robot()
+            return
+
+        cmd.linear.x = target_linear * speed_mag
+        cmd.angular.z = target_angular + avoid_dir
+
+        if cmd.angular.z > 1.2:
+            cmd.angular.z = 1.2
+        elif cmd.angular.z < -1.2:
+            cmd.angular.z = -1.2
 
         self.pub_cmd.publish(cmd)
 
     def follow_human(self):
         if self.person is None:
+            self.stop_robot()
+            return
+
+        if self.emerge_stop_com:
             self.stop_robot()
             return
 
@@ -407,12 +504,12 @@ class IntegratedNavigation(Node):
         with open(yaml_path, 'r') as f:
             self.waypoints = yaml.safe_load(f)
 
-        if self.waypoints:
-            self.home_pose = self.waypoints[0]
-
         self.get_logger().info(f'{len(self.waypoints)} waypoints loaded')
 
     def send_next_waypoint(self):
+        if self.aligning:
+            return
+            
         if not self.waypoints:
             return
 
@@ -425,8 +522,30 @@ class IntegratedNavigation(Node):
         if self.global_path:
             return
 
+        if self.return_home:
+            wp = self.waypoints[self.return_wp_index] 
+
+            msg = PoseStamped()
+            msg.pose.position.x = wp['x']
+            msg.pose.position.y = wp['y']
+            msg.pose.orientation.z = sin(wp['yaw'] / 2.0)
+            msg.pose.orientation.w = cos(wp['yaw'] / 2.0)
+
+            self.goal_callback(msg)
+
+            self.return_wp_index -= 1
+
+            if self.return_wp_index < 0:
+                self.stop_robot()
+                self.return_home = False
+                self.stop_requested = False
+                self.patrol_active = False
+            return
+
         if not self.patrol_active:
             return
+
+        self.current_goal_index = self.wp_index
 
         wp = self.waypoints[self.wp_index]
         msg = PoseStamped()
@@ -435,12 +554,7 @@ class IntegratedNavigation(Node):
         msg.pose.orientation.z = sin(wp['yaw'] / 2.0)
         msg.pose.orientation.w = cos(wp['yaw'] / 2.0)
 
-        self.current_goal_is_home = False
         self.goal_callback(msg)
-
-        self.wp_index += 1
-        if self.wp_index >= len(self.waypoints):
-            self.wp_index = 0
 
     def world_to_grid(self, world):
         return (int((world[1]-self.map_origin[1])/self.map_resolution),

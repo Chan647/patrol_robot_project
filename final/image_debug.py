@@ -31,7 +31,7 @@ class VisionDebugNode(Node):
 
     def human_callback(self, msg):
         self.human_state = msg.data
-        if self.human_state != "PERSON":
+        if self.human_state != "DETECT":
             self.person = None
 
     def person_callback(self, msg):

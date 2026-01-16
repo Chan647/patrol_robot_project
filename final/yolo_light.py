@@ -38,7 +38,7 @@ class TrafficLightNode(Node):
             return
 
         results = self.model(frame, verbose=False)
-        detected_status = "NO" 
+        detected_status = "NONE" 
 
         for result in results:
             boxes = result.boxes

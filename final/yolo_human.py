@@ -1,6 +1,7 @@
 import rclpy
 import cv2
 import numpy as np
+import joblib
 
 from ultralytics import YOLO
 from sensor_msgs.msg import CompressedImage
@@ -13,11 +14,13 @@ from rclpy.node import Node
 
 qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 
+
 class PersonDetectNode(Node):
     def __init__(self):
         super().__init__('person_detect_node')
 
         self.model = YOLO('/home/cho/lch_ws/src/turtle_pkg/turtle_pkg/patrol_robot/yolov8n.pt')
+        self.model_data = joblib.load('/home/cho/lch_ws/src/turtle_pkg/config/person_gate_model.joblib')
         
         self.pub_person = self.create_publisher(Int32, '/person', 10)
         self.pub_state = self.create_publisher(String,'/human_state', 10)
@@ -29,13 +32,16 @@ class PersonDetectNode(Node):
 
         self.detect_timeout = 0.6
         self.resize_width = 416
+        self.process_timeout = 0.3
 
-        self.person = None
-        self.person_conf_threshold = 0.6
+        self.ml_model = self.model_data["model"]
+        self.feature_cols = self.model_data["feature_cols"]
+        self.ml_threshold = 0.7
+
 
     def image_callback(self, msg):
-        now = self.get_clock().now()    
-        if (now - self.time).nanoseconds < 300_000_000:
+        now = self.get_clock().now()
+        if (now - self.time).nanoseconds < int(self.process_timeout * 1e9):
             return
         self.time = now
 
@@ -53,61 +59,72 @@ class PersonDetectNode(Node):
         frame_area = frame_h * frame_w
 
         detected = False
-        max_score = 0.0
+        best_center = None
+        best_prob = 0.0
 
         results = self.model(frame, conf=0.3, verbose=False)
 
         for r in results:
-            boxes = r.boxes
-            if boxes is None:
+            if r.boxes is None:
                 continue
 
-            for b in boxes:
+            for b in r.boxes:
                 cls = int(b.cls[0])
                 conf = float(b.conf[0])
 
                 if cls != 0:
                     continue
 
-                if conf < self.person_conf_threshold:
-                    continue
-
                 x1, y1, x2, y2 = b.xyxy[0].cpu().numpy().astype(int)
-
                 w_box = x2 - x1
                 h_box = y2 - y1
 
-                area = w_box * h_box
-                aspect_ratio = h_box / float(w_box)
-                
-                if area < frame_area * 0.03:
+                if w_box <= 0 or h_box <= 0:
                     continue
 
-                if aspect_ratio < 1.3:
-                    continue  
+                area = w_box * h_box
+                aspect_ratio = h_box / float(w_box)
 
-                score = conf * area
-                if score > max_score:
-                    max_score = score
+                if area < frame_area * 0.03:
+                    continue
+                if aspect_ratio < 1.3:
+                    continue
+
+                center_x = int((x1 + x2) / 2)
+
+                feature = np.array([[
+                    conf,                              
+                    center_x / float(frame_w),          
+                    area / float(frame_area),          
+                    aspect_ratio,                    
+                    w_box / float(frame_w),            
+                    h_box / float(frame_h),          
+                ]], dtype=np.float32)
+
+
+                prob = self.ml_model.predict_proba(feature)[0, 1]
+
+                if prob > self.ml_threshold and prob > best_prob:
+                    best_prob = prob
+                    best_center = center_x
                     detected = True
-                    self.person = int((x1 + x2) / 2)
 
         state_msg = String()
-        human_msg = Int32()
+        person_msg = Int32()
 
         if detected:
             self.detect_time = now
-            state_msg.data = "PERSON"
+            state_msg.data = "DETECT"
             self.pub_state.publish(state_msg)
 
-            human_msg.data = self.person
-            self.pub_person.publish(human_msg)
+            person_msg.data = best_center
+            self.pub_person.publish(person_msg)
 
         else:
             if (now - self.detect_time).nanoseconds < int(self.detect_timeout * 1e9):
                 return
-            self.person = None
-            state_msg.data = "NORMAL"
+
+            state_msg.data = "NONE"
             self.pub_state.publish(state_msg)
 
 

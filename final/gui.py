@@ -8,6 +8,7 @@ import uuid
 import pymysql
 import webbrowser
 import threading
+import math
 
 from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem, QPushButton
 from botocore.exceptions import ClientError
@@ -29,7 +30,7 @@ from PyQt5.QtCore import QTimer, Qt
 
 s3 = boto3.client(
     's3',
-    endpoint_url='http://192.168.0.17:9000',
+    endpoint_url='http://192.168.0.2:9000',
     aws_access_key_id='minioadmin',
     aws_secret_access_key='minioadmin',
     region_name='us-east-1'
@@ -57,7 +58,7 @@ def upload_image_to_minio(frame):
             ContentType='image/png'
         )
 
-        return f"http://192.168.0.17:9000/{BUCKET_NAME}/{filename}"
+        return f"http://192.168.0.2:9000/{BUCKET_NAME}/{filename}"
 
     except Exception as e:
         print(f"[MinIO Upload Error] {e}")
@@ -134,21 +135,21 @@ class GuiNode(Node):
     def __init__(self, gui):
         super().__init__('patrol_gui_node')
         self.gui = gui
-        self.uploaded_once = False
-        self.last_event = None
+        self.human_active = False
 
         self.pub_start = self.create_publisher(Bool, '/patrol_start', 10)
         self.pub_stop = self.create_publisher(Bool, '/patrol_stop', 10)
         self.pub_auto = self.create_publisher(Bool, '/auto_mode', 10)
         self.pub_manual = self.create_publisher(Bool, '/manual_mode', 10)
         self.pub_emergstop = self.create_publisher(Bool,'/emergency_stop', 10)
+        self.pub_initialpose = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
 
         self.sub_image = self.create_subscription(CompressedImage, '/image_debug', self.image_callback, 10)
         self.sub_map = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
         self.sub_path = self.create_subscription(Path, '/planned_path', self.path_callback, 10)
         self.sub_pose = self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self.pose_callback, 10)
         self.sub_event = self.create_subscription(Event, '/patrol_event', self.event_callback, 10)
-
+        
     def send_start(self):
         msg = Bool()
         msg.data = True
@@ -163,17 +164,21 @@ class GuiNode(Node):
         msg = Bool()
         msg.data = True
         self.pub_emergstop.publish(msg)
-        self.uploaded_once = False
 
     def auto(self):
-        msg = Bool()
-        msg.data = True
-        self.pub_auto.publish(msg)
+        self.pub_initial_pose()
+        self._auto_timer = self.create_timer(5, self.auto_timer)
 
     def manual(self):
         msg = Bool()
         msg.data = True
         self.pub_manual.publish(msg)
+
+    def auto_timer(self):
+        msg = Bool()
+        msg.data = True
+        self.pub_auto.publish(msg)
+        self._auto_timer.cancel()
 
     def image_callback(self, msg):
         np_arr = np.frombuffer(msg.data, np.uint8)
@@ -212,38 +217,59 @@ class GuiNode(Node):
         p = msg.pose.pose.position
         self.gui.robot_pose = (p.x, p.y)
 
-    def event_callback(self,msg):
-        if msg.situation != "HUMAN DETECT":
-            if self.uploaded_once:
-                return
-            self.uploaded_once = True
-
-        if msg.situation == self.last_event:
+    def event_callback(self, msg):
+        if msg.situation not in ["HUMAN DETECT", "EMERGENCY STOP"]:
             return
-        self.last_event = msg.situation
 
+        if msg.situation == "HUMAN DETECT":
+            if self.human_active:
+                return
+            self.human_active = True
+
+            QTimer.singleShot(150, lambda: self.capture_event_image(msg))
+            QTimer.singleShot(1000, lambda: setattr(self, "human_active", False))
+
+        elif msg.situation == "EMERGENCY STOP":
+            QTimer.singleShot(
+                0,
+                lambda: self.capture_event_image(msg)
+            )
+
+        self.update_event_UI(msg)
+
+    def capture_event_image(self, msg):
+        if self.gui.camera_frame is None:
+            return
+
+        frame = self.gui.camera_frame.copy()
+
+        img = cv2.resize(frame, (280, 180))
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        qimg = QImage(
+            img_rgb.data,
+            img_rgb.shape[1],
+            img_rgb.shape[0],
+            img_rgb.strides[0],
+            QImage.Format_RGB888
+        )
+        self.gui.event_img.setPixmap(QPixmap.fromImage(qimg))
+
+        threading.Thread(
+            target=self.save_event_async,
+            args=(msg, frame),
+            daemon=True
+        ).start()
+
+    def update_event_UI(self, msg):
         now = datetime.datetime.now()
         time_str = now.strftime("%H:%M:%S")
+
         self.gui.event_type.setText(f'<span style="color:green; font-weight:bold; font-size:25px">상황 : </span>' f'<span style="color:black; font-size:25px">{msg.situation}</span>')
         self.gui.event_msg.setText(f'<span style="color:green; font-weight:bold; font-size:25px">상태 : </span>' f'<span style="color:black; font-size:25px">{msg.status}</span>')
         self.gui.robot_x.setText(f'<span style="color:green; font-weight:bold; font-size:25px">X 좌표 : </span>' f'<span style="color:black; font-size:25px">{msg.x:.2f}</span>')
         self.gui.robot_y.setText(f'<span style="color:green; font-weight:bold; font-size:25px">y 좌표 : </span>' f'<span style="color:black; font-size:25px">{msg.y:.2f}</span>')
         self.gui.timestamp.setText(f'<span style="color:green; font-weight:bold; font-size:25px">현재 시간 : </span>' f'<span style="color:black; font-size:25px">{time_str}</span>')
-
-        if self.gui.camera_frame is not None:
-            frame = self.gui.camera_frame.copy()
-            img = cv2.resize(frame, (280, 180))
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-            qimg = QImage(
-                img_rgb.data,
-                img_rgb.shape[1],
-                img_rgb.shape[0],
-                img_rgb.strides[0],
-                QImage.Format_RGB888
-            )
-            self.gui.event_img.setPixmap(QPixmap.fromImage(qimg))
-            threading.Thread(target=self.save_event_async, args=(msg, frame),daemon=True).start()
 
     def save_event_async(self, msg, frame):
         try:
@@ -258,6 +284,29 @@ class GuiNode(Node):
                 )
         except Exception as e:
             print("[EVENT SAVE ERROR]", e)
+
+    def pub_initial_pose(self):
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = "map"
+        msg.header.stamp = self.get_clock().now().to_msg()
+
+        msg.pose.pose.position.x = -0.008
+        msg.pose.pose.position.y = 0.029
+
+        yaw = -0.041
+        msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
+        msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
+
+        msg.pose.covariance = [
+            0.25, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.25, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0685
+        ]
+
+        self.pub_initialpose.publish(msg)
 
 
 class Patrolgui(QWidget):

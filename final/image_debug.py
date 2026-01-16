@@ -16,7 +16,7 @@ class VisionDebugNode(Node):
         super().__init__('vision_debug_node')
 
         self.traffic_state = "NO"
-        self.human_state = "NORMAL"
+        self.human_state = "NONE"
         self.person = None
 
         self.sub_img = self.create_subscription(CompressedImage,'/image_raw/compressed',self.image_callback, qos)
@@ -54,7 +54,7 @@ class VisionDebugNode(Node):
         elif self.traffic_state == "GREEN":
             traffic_color = (0, 255, 0)
 
-        if self.human_state == "NORMAL":
+        if self.human_state == "NONE":
             human_color = (180, 180, 180)
 
         cv2.putText(frame, f"TRAFFIC: {self.traffic_state}", (20, 40),

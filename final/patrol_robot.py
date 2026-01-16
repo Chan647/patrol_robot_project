@@ -7,13 +7,13 @@ from patrol_msgs.msg import Event
 from math import pow, atan2, sqrt, sin, pi, cos
 from sensor_msgs.msg import CompressedImage
 from rclpy.qos import qos_profile_sensor_data
+from turtlebot3_msgs.srv import Sound
 
 import rclpy
 import heapq
 import numpy as np
 import os
 import yaml
-
 
 class NodeAStar:
     def __init__(self, parent=None, position=None):
@@ -61,6 +61,7 @@ class IntegratedNavigation(Node):
         self.return_home = False
         self.return_wp_index = None
         self.current_goal_index = None
+        self.first_start = True
         self.load_waypoints()
 
         self.stop_requested = False
@@ -69,13 +70,15 @@ class IntegratedNavigation(Node):
 
         self.mode = "MANUAL"
         self.traffic_state = "NO"
-        self.human_state = "NORMAL"
+        self.human_state = "NONE"
         self.localization_ok = False
         self.signal_stop =  False
 
         self.image_center = 208 
         self.person = None
         self.human_detect = False
+
+        self.buzzer_timer = None
 
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_path = self.create_publisher(Path, '/planned_path', 10)
@@ -94,6 +97,8 @@ class IntegratedNavigation(Node):
         self.sub_traffic_msg = self.create_subscription(String, '/traffic_state', self.traffic_callback, 10)
         self.sub_human_msg = self.create_subscription(String, '/human_state', self.human_callback, 10)
         self.sub_person = self.create_subscription(Int32, '/person', self.person_callback, 10)
+
+        self.buzzer = self.create_client(Sound, '/sound')
 
 
         self.timer = self.create_timer(0.3, self.control)
@@ -172,8 +177,12 @@ class IntegratedNavigation(Node):
         self.stop_requested = False
         self.global_path = []
         self.path_index = 0
-        self.wp_index = 0
-        self.get_logger().info("Resuming patrol.")  
+
+        if self.first_start:
+            self.wp_index = 0
+            self.first_start = False
+        else:
+            self.get_logger().info(f"Resume patrol (goal : wp_index={self.wp_index})")
 
     def auto_callback(self,msg):
         if msg.data:
@@ -211,25 +220,26 @@ class IntegratedNavigation(Node):
         prev = self.human_state
         self.human_state = msg.data
 
-        if prev == "NORMAL" and self.human_state == "PERSON":
+        if prev == "NONE" and self.human_state == "PERSON":
             self.human_detect = True
-
-            self.target_wp_index = self.current_goal_index
-            if self.target_wp_index is None:
-                self.target_wp_index = self.wp_index 
 
             self.global_path = []
             self.path_index = 0
 
             self.event("HUMAN DETECT", "FOLLOW HUMAN")
+            self.start_buzzer()
 
-        if prev == "PERSON" and self.human_state == "NORMAL":
+        if prev == "PERSON" and self.human_state == "NONE":
             self.person = None
             self.human_detect = False
+            self.patrol_active = True 
+
+            self.stop_buzzer()
+
             self.global_path = []
             self.path_index = 0
 
-            wp = self.waypoints[self.target_wp_index]
+            wp = self.waypoints[self.wp_index]
             msg = PoseStamped()
             msg.pose.position.x = wp['x']
             msg.pose.position.y = wp['y']
@@ -239,10 +249,12 @@ class IntegratedNavigation(Node):
 
             if not self.global_path:
                 self.get_logger().warn("Return path failed")
-                self.wp_index = self.target_wp_index
 
     def person_callback(self,msg):
         self.person = int(msg.data)
+
+    def buzzer_callback(self):
+        self.play_sound(2)
 
     def event(self, situation, status, image_path=""):
         if self.current_pose is None:
@@ -436,11 +448,41 @@ class IntegratedNavigation(Node):
 
         cmd = Twist()
 
+        cmd = self.avoid_obstacle(cmd, alpha)
+        if cmd is None:
+            return
+
+        self.pub_cmd.publish(cmd)
+
+    def follow_human(self):
+        if self.person is None:
+            self.stop_robot()
+            return
+
+        if self.emerge_stop_com:
+            self.stop_robot()
+            return
+
+        error = float(self.person - self.image_center)
+
+        cmd = Twist()
+        cmd.linear.x = 0.12
+        cmd.angular.z = -0.003 * error
+
+        if cmd.angular.z > 1.0: cmd.angular.z = 1.0
+        if cmd.angular.z < -1.0: cmd.angular.z = -1.0
+
+        cmd = self.avoid_obstacle(cmd, alpha=0.0)
+
+        if cmd is None:
+            return
+
+        self.pub_cmd.publish(cmd)
+
+    def avoid_obstacle(self, cmd, alpha):
         target_linear = self.linear_vel
         target_angular = target_linear * self.linear_vel * sin(alpha) / self.lookahead_dist
 
-        avoid_dist = 0.35
-        slow_dist = 0.55
         avoid_dir = 0.0
         speed_mag = 1.0
 
@@ -472,28 +514,7 @@ class IntegratedNavigation(Node):
         elif cmd.angular.z < -1.2:
             cmd.angular.z = -1.2
 
-        self.pub_cmd.publish(cmd)
-
-    def follow_human(self):
-        if self.person is None:
-            self.stop_robot()
-            return
-
-        if self.emerge_stop_com:
-            self.stop_robot()
-            return
-
-        error = float(self.person - self.image_center)
-
-        cmd = Twist()
-        cmd.linear.x = 0.12
-        cmd.angular.z = -0.003 * error
-
-        if cmd.angular.z > 1.0: cmd.angular.z = 1.0
-        if cmd.angular.z < -1.0: cmd.angular.z = -1.0
-
-        self.pub_cmd.publish(cmd)
-
+        return cmd
 
     def load_waypoints(self):
         yaml_path = '/home/cho/lch_ws/src/turtle_pkg/config/patrol_waypoints.yaml'
@@ -579,6 +600,21 @@ class IntegratedNavigation(Node):
         if valid_values:
             return min(valid_values)
         return 99.9
+
+    def play_sound(self, value: int):
+        req = Sound.Request()
+        req.value = int(value)
+        self.buzzer.call_async(req)
+
+    def start_buzzer(self):
+        if self.buzzer_timer is not None:
+            return
+        self.buzzer_timer = self.create_timer(1.0, self.buzzer_callback)
+
+    def stop_buzzer(self):
+        if self.buzzer_timer is not None:
+            self.buzzer_timer.cancel()
+            self.buzzer_timer = None
 
     def stop_robot(self):
         self.pub_cmd.publish(Twist())

@@ -10,7 +10,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 
-
+# 카메라 영상 위에 신호등 상태와 사람 인식 상태를 시각적으로 표시 
+# 디버깅용 영상 토픽으로 재발행하는 노드
 class VisionDebugNode(Node):
     def __init__(self):
         super().__init__('vision_debug_node')
@@ -26,17 +27,27 @@ class VisionDebugNode(Node):
 
         self.pub_debug = self.create_publisher(CompressedImage,'/image_debug', 10)
 
+    # 신호등 상태 토픽 수신
+    # 현재 신호 상태를 내부 변수로 갱신
     def traffic_callback(self, msg):
         self.traffic_state = msg.data
 
+    # 사람 인식 상태 토픽 수신
+    # 사람 검출 여부 관리
     def human_callback(self, msg):
         self.human_state = msg.data
         if self.human_state != "DETECT":
             self.person = None
 
+    # 사람 판별 결과 토픽 수신
+    # 현재 사람 인식 결과 저장
     def person_callback(self, msg):
         self.person = int(msg.data)
 
+    # 카메라 영상을 수신하여 신호등 및 사람 상태 표시
+    # 디버깅용 영상 토픽으로 다시 발행
+    # 사람/신호등 인식 안될 시 NONE
+    # 인식 시 각각 RED, GREEN, DETECT
     def image_callback(self, msg):
         np_arr = np.frombuffer(msg.data, np.uint8)
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)

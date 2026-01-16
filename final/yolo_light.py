@@ -12,7 +12,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 
-
+# YOLO 기반 신호등 인식 결과에 색상 구분 추가 
+# 현재 신호등 상태를 ROS 토픽으로 발행하는 노드
 class TrafficLightNode(Node):
     def __init__(self):
         super().__init__('traffic_light_node')
@@ -24,7 +25,9 @@ class TrafficLightNode(Node):
         self.sub_img = self.create_subscription(CompressedImage,'/image_raw/compressed', self.image_callback, qos)
         self.pub_state = self.create_publisher(String,'/traffic_state', 10)
 
-
+    # 카메라 영상을 처리하여 신호등 색상을 판단하고 상태 갱신
+    # 빨간색, 초록색 색상 범위 지정
+    # 빨간불, 초록불에 따라 각각 RED,GREEN 메시지 토픽 발행
     def image_callback(self, msg):
         now = self.get_clock().now()
         if (now - self.time).nanoseconds < 300_000_000:

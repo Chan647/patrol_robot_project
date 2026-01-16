@@ -4,6 +4,7 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 import yaml
 import math
 
+# 로봇의 시작 위치와 사용자 정의 웨이포인트를 지정해서 YAML파일로 저장하는 노드
 class WaypointCollector(Node):
     def __init__(self):
         super().__init__('waypoint_collector')

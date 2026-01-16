@@ -13,24 +13,18 @@ from rclpy.node import Node
 
 qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 
+# YOLO로 사람 객체를 검출하고 검출 결과의 특징을 추출하여 샘플을 CSV 파일로 저장하는 노드
 class PersonDetectNode(Node):
     def __init__(self):
         super().__init__('person_detect_node')
 
-        self.model = YOLO(
-            '/home/cho/lch_ws/src/turtle_pkg/turtle_pkg/patrol_robot/yolov8n.pt'
-        )
+        self.model = YOLO('/home/cho/lch_ws/src/turtle_pkg/turtle_pkg/patrol_robot/yolov8n.pt')
 
         self.pub_state  = self.create_publisher(String,  '/human_state', 10)
         self.pub_center = self.create_publisher(Int32,   '/person', 10)
         self.pub_conf   = self.create_publisher(Float32, '/person_conf', 10)
 
-        self.sub_img = self.create_subscription(
-            CompressedImage,
-            '/image_raw/compressed',
-            self.image_callback,
-            qos
-        )
+        self.sub_img = self.create_subscription(CompressedImage,'/image_raw/compressed', self.image_callback,qos)
 
         self.resize_width = 416
         self.conf_threshold = 0.6
@@ -55,6 +49,7 @@ class PersonDetectNode(Node):
         else:
             self.df = pd.DataFrame(columns=self.columns)
 
+    # 카메라 영상을 처리하여 사람 검출 결과를 생성하고 상태 토픽 발행
     def image_callback(self, msg):
         now = self.get_clock().now()
         if (now - self.last_process_time).nanoseconds < 300_000_000:

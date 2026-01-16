@@ -243,7 +243,7 @@ class IntegratedNavigation(Node):
         prev = self.human_state
         self.human_state = msg.data
 
-        if prev == "NONE" and self.human_state == "PERSON":
+        if prev == "NONE" and self.human_state == "DETECT":
             self.human_detect = True
 
             self.global_path = []
@@ -252,7 +252,7 @@ class IntegratedNavigation(Node):
             self.event("HUMAN DETECT", "FOLLOW HUMAN")
             self.start_buzzer()
 
-        if prev == "PERSON" and self.human_state == "NONE":
+        if prev == "DETECT" and self.human_state == "NONE":
             self.person = None
             self.human_detect = False
             self.patrol_active = True 

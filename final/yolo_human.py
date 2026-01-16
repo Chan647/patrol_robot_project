@@ -10,11 +10,9 @@ from std_msgs.msg import Int32
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rclpy.node import Node
 
-
-
 qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 
-
+# 머신러닝 게이트 모델을 적용하여 사람 객체를 판단하고 결과를 ROS 토픽으로 발행하는 노드
 class PersonDetectNode(Node):
     def __init__(self):
         super().__init__('person_detect_node')
@@ -38,7 +36,8 @@ class PersonDetectNode(Node):
         self.feature_cols = self.model_data["feature_cols"]
         self.ml_threshold = 0.7
 
-
+    # 카메라 영상을 수신하여 YOLO 검출 후 머신러닝 모델로 사람 객체 판단
+    # 판단 상태를 토픽으로 발행
     def image_callback(self, msg):
         now = self.get_clock().now()
         if (now - self.time).nanoseconds < int(self.process_timeout * 1e9):

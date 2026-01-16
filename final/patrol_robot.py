@@ -15,6 +15,7 @@ import numpy as np
 import os
 import yaml
 
+# A* 경로 탐색에서 사용하는 노드 정보를 저장
 class NodeAStar:
     def __init__(self, parent=None, position=None):
         self.parent = parent
@@ -25,6 +26,8 @@ class NodeAStar:
     def __eq__(self, other): return self.position == other.position
     def __lt__(self, other): return self.f < other.f
 
+ # 로봇의 전체 주행, 상태 관리, 센서/토픽/타이머 초기화
+ # 순찰, 사람 추종, 신호등, 비상정지, 경로계획 등 통합 관리
 class IntegratedNavigation(Node):
     def __init__(self):
         super().__init__('integrated_navigation')
@@ -105,6 +108,7 @@ class IntegratedNavigation(Node):
         self.wp_timer = self.create_timer(1.0, self.send_next_waypoint)
         self.get_logger().info("Let's Run!")
 
+    # OccupancyGrid 맵을 수신해서 해상도, 크기, 원점, 맵 데이터 저장
     def map_callback(self, msg):
         self.map_resolution = msg.info.resolution
         self.map_width = msg.info.width
@@ -112,11 +116,15 @@ class IntegratedNavigation(Node):
         self.map_origin = [msg.info.origin.position.x, msg.info.origin.position.y]
         self.map_data = np.array(msg.data).reshape((self.map_height, self.map_width))
 
+    # AMCL 위치를 받아 현재 로봇 위치(x, y)와 yaw 각도 계산
+    # 주행 제어와 경로 추종에 사용
     def pose_callback(self, msg):
         self.current_pose = [msg.pose.pose.position.x, msg.pose.pose.position.y]
         q = msg.pose.pose.orientation
         self.current_yaw = atan2(2.0*(q.w*q.z + q.x*q.y), 1.0-2.0*(q.y*q.y + q.z*q.z))
 
+    # 목표 지점을 받아서 A* 알고리즘으로 경로 생성
+    # 월드 좌표를 그리드 좌표로 변환 후 경로 생성
     def goal_callback(self, msg):
         if self.map_data is None or self.current_pose is None: return
 
@@ -132,6 +140,8 @@ class IntegratedNavigation(Node):
         else:
             self.get_logger().warn("No Path Found.")
     
+    # 라이다 데이터를 받아서 최소 장애물 거리 계산
+    # 장애물 회피 로직을 구현할 때 사용
     def scan_callback(self,msg):
         n = len(msg.ranges)
         front = msg.ranges[0:12] + msg.ranges[-12:]
@@ -142,11 +152,15 @@ class IntegratedNavigation(Node):
         self.left_dist = self.get_min_dist(left)
         self.right_dist = self.get_min_dist(right)
 
+    # 순찰 정지 명령을 구독해서 명령을 받으면 현재 순찰 중단
     def stop_callback(self, msg):
         if msg.data:
             self.stop_requested = True
             self.get_logger().info("Stop command!")
 
+    # 비상정지 명령을 구독해서 명령을 받으면 즉시 정지
+    # 토글 방식을 이용하여 한번더 명령을 받는다면 비상정지 해제
+    # 현재 경로와 무관하게 즉시 정지
     def emerge_callback(self, msg):
         if not msg.data:
             return
@@ -160,6 +174,8 @@ class IntegratedNavigation(Node):
         else:
             self.get_logger().info("Emergency Stop Released")
 
+    # 순찰 시작/재개 명령을 구독해서 명령을 받으면 AUTO 모드에서 순찰 시작
+    # 초기 시작과 재개를 구분
     def start_callback(self, msg):
         if not msg.data:
             return
@@ -184,6 +200,7 @@ class IntegratedNavigation(Node):
         else:
             self.get_logger().info(f"Resume patrol (goal : wp_index={self.wp_index})")
 
+    # AUTO 명령을 구독해서 명령을 받으면 자율 주행 활성화
     def auto_callback(self,msg):
         if msg.data:
             self.mode = "AUTO"
@@ -194,6 +211,8 @@ class IntegratedNavigation(Node):
             self.global_path = []
             self.get_logger().info("AUTO mode")
 
+    # MANUAL 명령을 구독해서 명령을 받으면 수동 모드로 전환
+    # 로봇이 움직이는 중이면 전환 금지
     def manual_callback(self,msg):
         if msg.data:
             if self.global_path:
@@ -203,10 +222,12 @@ class IntegratedNavigation(Node):
             self.localization_ok = False
             self.get_logger().info("MANUAL mode")
 
+    # 초기 위치 설정 신호를 받아 로컬라이제이션 완료 상태로 만듬
     def signal_callback(self,msg):
         if not self.localization_ok:
             self.localization_ok = True
 
+    # 신호등 상태를 받아서 정지 여부 결정
     def traffic_callback(self,msg):
         self.traffic_state = msg.data
 
@@ -216,6 +237,8 @@ class IntegratedNavigation(Node):
         elif self.traffic_state == "GREEN":
             self.signal_stop = False
 
+    # 사람 감지 상태를 받아서 사람 추종/경로 복귀 제어
+    # 사람이 감지 되면 부저 발생
     def human_callback(self,msg):
         prev = self.human_state
         self.human_state = msg.data
@@ -250,12 +273,17 @@ class IntegratedNavigation(Node):
             if not self.global_path:
                 self.get_logger().warn("Return path failed")
 
+    # 사람의 화면 중심 위치를 받아서 추종 제어(위치 기준 로봇이 사람을 따라 가도록)에 사용
     def person_callback(self,msg):
         self.person = int(msg.data)
 
+    # 부저 재생
     def buzzer_callback(self):
         self.play_sound(2)
 
+    # 현재 로봇 상태를 메세지로 발행
+    # 특수 상태 2개를 발행
+    # 사람 감지, 비상 정지
     def event(self, situation, status, image_path=""):
         if self.current_pose is None:
             return
@@ -269,6 +297,8 @@ class IntegratedNavigation(Node):
 
         self.pub_event.publish(msg)
 
+    # A* 알고리즘을 사용해서 시작점에서 목표점까지 경로 계산
+    # 로봇 반경을 고려해 장애물과 너무 가까운 경로 제외
     def run_astar(self, start, end):
         if not (0 <= start[0] < self.map_height and 0 <= start[1] < self.map_width): return None
         if not (0 <= end[0] < self.map_height and 0 <= end[1] < self.map_width): return None
@@ -320,7 +350,42 @@ class IntegratedNavigation(Node):
                 heapq.heappush(open_list, new_node)
         return None
 
+    # 주행 로직의 메인 제어 루프
+    # 비상정지, 신호등 제어, 사람/경로 추종 제어 상태를 판단하여 동작 결정
     def control(self):
+        if self.emerge_stop_com:
+            self.stop_robot()
+            return
+
+        if not self.localization_ok:
+            return
+
+        if self.mode == "MANUAL":
+            return
+
+        if self.human_state == "PERSON":
+            if self.front_dist < 0.4:
+                self.stop_robot()
+                return
+            if self.signal_stop is False and self.emerge_stop_com is False:
+                self.follow_human()
+                return
+            return
+        
+        if self.aligning:
+            self.turn_align()
+            return
+
+        if self.signal_stop:
+            self.stop_robot()
+            return
+
+        if not self.global_path:
+            return
+
+        self.follow_path()
+
+    def turn_align(self):
         if self.aligning:
             yaw_error = self.target_yaw - self.current_yaw
             if yaw_error > pi:
@@ -349,34 +414,8 @@ class IntegratedNavigation(Node):
                 self.stop_robot()
                 return
 
-        if self.emerge_stop_com:
-            self.stop_robot()
-            return
-
-        if not self.localization_ok:
-            return
-
-        if self.mode == "MANUAL":
-            return
-
-        if self.human_state == "PERSON":
-            if self.front_dist < 0.4:
-                self.stop_robot()
-                return
-            if self.signal_stop is False and self.emerge_stop_com is False:
-                self.follow_human()
-                return
-            return
-
-        if self.signal_stop:
-            self.stop_robot()
-            return
-
-        if not self.global_path:
-            return
-
-        self.follow_path()
-
+    # A* 알고리즘으로 생성된 경로를 따라서 로봇을 이동
+    # lookahead 기반으로 목표점 선택
     def follow_path(self):
         if self.current_pose is None or not self.global_path:
             return
@@ -454,6 +493,8 @@ class IntegratedNavigation(Node):
 
         self.pub_cmd.publish(cmd)
 
+    # 카메라 센서 기반 사람 위치를 사용하여 사람 추종 
+    # 화면 중심 오차를 이용해 속도 제어
     def follow_human(self):
         if self.person is None:
             self.stop_robot()
@@ -466,7 +507,7 @@ class IntegratedNavigation(Node):
         error = float(self.person - self.image_center)
 
         cmd = Twist()
-        cmd.linear.x = 0.12
+        cmd.linear.x = 0.18
         cmd.angular.z = -0.003 * error
 
         if cmd.angular.z > 1.0: cmd.angular.z = 1.0
@@ -479,6 +520,8 @@ class IntegratedNavigation(Node):
 
         self.pub_cmd.publish(cmd)
 
+    # 라이다 센서를 통해 얻은 거리를 기반으로 장애물 회피
+    # 거리 조건에 따라 속도 조절
     def avoid_obstacle(self, cmd, alpha):
         target_linear = self.linear_vel
         target_angular = target_linear * self.linear_vel * sin(alpha) / self.lookahead_dist
@@ -516,6 +559,7 @@ class IntegratedNavigation(Node):
 
         return cmd
 
+    # YAML 파일에서 순찰 웨이포인트(경유지)를 불러옴
     def load_waypoints(self):
         yaml_path = '/home/cho/lch_ws/src/turtle_pkg/config/patrol_waypoints.yaml'
         if not os.path.exists(yaml_path):
@@ -527,6 +571,8 @@ class IntegratedNavigation(Node):
 
         self.get_logger().info(f'{len(self.waypoints)} waypoints loaded')
 
+    # 현재 상태에 따라 다음 웨이포인트로 이동 명령 보냄
+    # 순찰, 복귀, 정렬 상태 등을 고려함
     def send_next_waypoint(self):
         if self.aligning:
             return
@@ -577,14 +623,17 @@ class IntegratedNavigation(Node):
 
         self.goal_callback(msg)
 
+    # 월드 좌표를 그리드 좌표로 변환
     def world_to_grid(self, world):
         return (int((world[1]-self.map_origin[1])/self.map_resolution),
                 int((world[0]-self.map_origin[0])/self.map_resolution))
 
+    # 그리드 좌표를 월드 좌표로 변환
     def grid_to_world(self, grid):
         return [(grid[1]*self.map_resolution)+self.map_origin[0],
                 (grid[0]*self.map_resolution)+self.map_origin[1]]
 
+    # 계산된 글로벌 경로를 GUI에서 시각화하기 위해 Path 토픽으로 발행
     def publish_path_viz(self):
         msg = Path()
         msg.header.frame_id = 'map'
@@ -594,6 +643,7 @@ class IntegratedNavigation(Node):
             msg.poses.append(ps)
         self.pub_path.publish(msg)
 
+    # 라이다 센서를 통해 얻은 거리 값에서 유효한 최소 거리 계산
     def get_min_dist(self, range_list):
 
         valid_values = [x for x in range_list if x > 0.05 and x < 10.0]
@@ -601,21 +651,25 @@ class IntegratedNavigation(Node):
             return min(valid_values)
         return 99.9
 
+    # 터틀봇 부저 사운드 재생
     def play_sound(self, value: int):
         req = Sound.Request()
         req.value = int(value)
         self.buzzer.call_async(req)
 
+    # 사람 감지 시 1초 간격으로 부저 울림
     def start_buzzer(self):
         if self.buzzer_timer is not None:
             return
         self.buzzer_timer = self.create_timer(1.0, self.buzzer_callback)
 
+    # 부저 타이머를 중지해서 부저 멈추기
     def stop_buzzer(self):
         if self.buzzer_timer is not None:
             self.buzzer_timer.cancel()
             self.buzzer_timer = None
 
+    # 로봇을 즉시 정지시키기 위하여 0 속도 Twist 발행
     def stop_robot(self):
         self.pub_cmd.publish(Twist())
 

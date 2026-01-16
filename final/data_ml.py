@@ -7,6 +7,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 import joblib
 
+# 카메라 기반 객체 검출 결과를 사람 몸체 기준 50% 이상이 나올때 사람으로 학습
+# 학습된 모델은 이미지 디버깅 노드에서 사용하기 위해 joblib 파일로 저장
 data_path = "/home/cho/lch_ws/src/turtle_pkg/config/person_dataset.csv"
 df = pd.read_csv(data_path).dropna()
 

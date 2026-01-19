@@ -1,7 +1,7 @@
 **# 🚗Patrol Robot**
 - --
 
-![GUI](images/patrol.png)
+![GUI](image/GUI.png)
 ![LOG]()
 ![로봇]()
 

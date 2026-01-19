@@ -1,10 +1,12 @@
-<h1 align="center">🚓 Patrol Robot</h1>
+<h1>🚓 Patrol Robot</h1>
 - --
 
+![로봇](image/robot.jpg)
 ![GUI](image/gui.png)
 ![LOG](image/log.png)
-![로봇](image/robot.jpg)
+<img src="images/patrol.png" width="70%">
 
+##🎈 주요 기능
 **### 1️⃣ 경로 기반 자율 주행 및 장애물 감지 자율 주행**
 - SLAM 기반 지도 생성
 - 사전 정의된 웨이포인트를 따른 경로 반복 주행

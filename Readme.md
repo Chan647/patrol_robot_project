@@ -1,9 +1,9 @@
 **# 🚗Patrol Robot**
 - --
 
-![GUI](image/GUI.png)
-![LOG]()
-![로봇]()
+![GUI](image/gui.png)
+![LOG](image/log.png)
+![로봇](image/robot.jpg)
 
 **### 1️⃣ 경로 기반 자율 주행 및 장애물 감지 자율 주행**
 - SLAM 기반 지도 생성

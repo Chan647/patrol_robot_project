@@ -1,6 +1,7 @@
 <h1>🚓 Patrol Robot</h1>
-- --
-
+<p align="center">
+  <img src="images/patrol.png" width="900">
+</p>
 ![로봇](image/robot.jpg)
 ![GUI](image/gui.png)
 ![LOG](image/log.png)

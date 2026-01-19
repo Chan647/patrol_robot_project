@@ -94,15 +94,15 @@ ros2 launch turtle_pkg execute_patrol_robot.launch.py
 ```
 
 - --
-
-**## ⚙️ 주요 토픽**
+## ⚙️ 주요 토픽
 
 | 토픽 | 타입 | 설명 |
-| /cmd_vel | geometry_msgs/Twist | 로봇 속도 제어 |
-| /map | nav_msgs/OccupancyGrid | 지도 데이터 |
-| /global_path | nav_msgs/Path | 전역 경로 |
-| /patrol_start | std_msgs/Bool | 순찰 시작 |
-| /patrol_stop | std_msgs/Bool | 비상 정지 |
+|------|------|------|
+| `/cmd_vel` | geometry_msgs/Twist | 로봇 속도 제어 |
+| `/map` | nav_msgs/OccupancyGrid | 지도 데이터 |
+| `/global_path` | nav_msgs/Path | 전역 경로 |
+| `/patrol_start` | std_msgs/Bool | 순찰 시작 |
+| `/patrol_stop` | std_msgs/Bool | 비상 정지 |
 
 - --
 

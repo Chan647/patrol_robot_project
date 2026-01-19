@@ -2,7 +2,8 @@
 - --
 
 ![GUI](images/patrol.png)
-![로봇]
+![LOG]()
+![로봇]()
 
 **### 1️⃣ 경로 기반 자율 주행 및 장애물 감지 자율 주행**
 - SLAM 기반 지도 생성
@@ -97,17 +98,10 @@ ros2 launch turtle_pkg execute_patrol_robot.launch.py
 **## ⚙️ 주요 토픽**
 
 | 토픽 | 타입 | 설명 |
-
-|---|---|---|
-
 | /cmd_vel | geometry_msgs/Twist | 로봇 속도 제어 |
-
 | /map | nav_msgs/OccupancyGrid | 지도 데이터 |
-
 | /global_path | nav_msgs/Path | 전역 경로 |
-
 | /patrol_start | std_msgs/Bool | 순찰 시작 |
-
 | /patrol_stop | std_msgs/Bool | 비상 정지 |
 
 - --
